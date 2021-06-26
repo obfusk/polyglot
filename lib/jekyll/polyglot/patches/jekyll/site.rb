@@ -1,3 +1,5 @@
+require 'etc'
+
 include Process
 module Jekyll
   class Site
@@ -31,21 +33,36 @@ module Jekyll
       prepare
       all_langs = (@languages + [@default_lang]).uniq
       if @parallel_localization
+        nproc = Etc.nprocessors
         pids = {}
-        all_langs.each do |lang|
-          pids[lang] = fork do
-            process_language lang
-          end
-        end
-        Signal.trap('INT') do
+        begin
           all_langs.each do |lang|
+            while pids.length >= nproc
+              wait
+              pids.each do |lang, pid|
+                begin
+                  next unless waitpid pid, Process::WNOHANG
+                rescue SystemCallError => e
+                  raise unless e.errno == Errno::ECHILD::Errno
+                end
+                pids.delete lang
+              end
+            end
+            pids[lang] = fork do
+              process_language lang
+            end
+          end
+          all_langs.each do |lang|
+            next unless pids.key? lang
+            waitpid pids[lang]
+            pids.delete lang
+          end
+        rescue Interrupt
+          all_langs.each do |lang|
+            next unless pids.key? lang
             puts "Killing #{pids[lang]} : #{lang}"
             kill('INT', pids[lang])
           end
-        end
-        all_langs.each do |lang|
-          waitpid pids[lang]
-          detach pids[lang]
         end
       else
         all_langs.each do |lang|
